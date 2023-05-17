@@ -1,0 +1,22 @@
+Package: ltfs
+Version: __version__
+Section: utils
+Priority: optional
+Architecture: __arch__
+Installed-Size: __size__
+Depends: __deplibs__
+Recommends:
+Suggests:
+Maintainer: Michael D Labriola <veggiemike@sourceruckus.org>
+Homepage: https://github.com/LinearTapeFileSystem/ltfs
+Description: Reference implementation of the LTFS format Spec for stand alone tape drive
+ Linear Tape File System (LTFS) is a filesystem to mount a LTFS
+ formatted tape in a tape drive. Once LTFS mounts a LTFS formatted tape
+ as filesystem, user can access to the tape via filesystem API.
+ .
+ Objective of this project is being the reference implementation of the
+ LTFS format Specifications in SNIA.
+ .
+ At this time, the target of this project to meet is the LTFS format
+ specifications
+ 2.4. (https://www.snia.org/sites/default/files/technical_work/LTFS/LTFS_Format_2.4.0_TechPosition.pdf).
