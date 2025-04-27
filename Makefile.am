@@ -53,7 +53,7 @@ clean-local:
 # i know this isn't the right way to do this... but it's how i've been
 # occasionally making .pkg files to install, now documented/automated
 # to make life easier.
-DEBREV=2
+DEBREV=1
 DEBVERSION=$(PACKAGE_VERSION)-$(DEBREV)
 DEBNAME=$(PACKAGE_TARNAME)_$(DEBVERSION)
 DEBFILE=$(abs_top_builddir)/$(DEBNAME).deb
