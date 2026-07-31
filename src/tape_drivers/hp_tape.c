@@ -3,7 +3,7 @@
 **  OO_Copyright_BEGIN
 **
 **
-**  Copyright 2010, 2020 IBM Corp. All rights reserved.
+**  Copyright 2010, 2025 IBM Corp. All rights reserved.
 **
 **  Redistribution and use in source and binary forms, with or without
 **   modification, are permitted provided that the following conditions
@@ -63,10 +63,11 @@
 #include "libltfs/ltfs_endian.h"
 
 struct supported_device *hp_supported_drives[] = {
-		TAPEDRIVE( HP_VENDOR_ID,  "Ultrium 5-SCSI",  DRIVE_LTO5,    "[Ultrium 5-SCSI]" ),  /* HP Ultrium Gen 5  */
-		TAPEDRIVE( HP_VENDOR_ID,  "Ultrium 6-SCSI",  DRIVE_LTO6,    "[Ultrium 6-SCSI]" ),  /* HP Ultrium Gen 6  */
-		TAPEDRIVE( HP_VENDOR_ID,  "Ultrium 7-SCSI",  DRIVE_LTO7,    "[Ultrium 7-SCSI]" ),  /* HP Ultrium Gen 7  */
-		TAPEDRIVE( HPE_VENDOR_ID, "Ultrium 8-SCSI",  DRIVE_LTO8,    "[Ultrium 8-SCSI]" ),  /* HPE Ultrium Gen 8 */
+		TAPEDRIVE( HP_VENDOR_ID,  "Ultrium 5-SCSI", DRIVE_LTO5,    "[Ultrium 5-SCSI]" ),  /* HP Ultrium Gen 5  */
+		TAPEDRIVE( HP_VENDOR_ID,  "Ultrium 6-SCSI", DRIVE_LTO6,    "[Ultrium 6-SCSI]" ),  /* HP Ultrium Gen 6  */
+		TAPEDRIVE( HP_VENDOR_ID,  "Ultrium 7-SCSI", DRIVE_LTO7,    "[Ultrium 7-SCSI]" ),  /* HP Ultrium Gen 7  */
+		TAPEDRIVE( HPE_VENDOR_ID, "Ultrium 8-SCSI", DRIVE_LTO8,    "[Ultrium 8-SCSI]" ),  /* HPE Ultrium Gen 8 */
+		TAPEDRIVE( HPE_VENDOR_ID, "Ultrium 9-SCSI", DRIVE_LTO9,    "[Ultrium 9-SCSI]" ),  /* HPE Ultrium Gen 9 */
 		/* End of supported_devices */
 		NULL
 };
@@ -226,6 +227,26 @@ static struct _timeout_tape timeout_lto9[] = {
 	{-1, -1}
 };
 
+static struct _timeout_tape timeout_lto10[] =  {
+	{ ERASE,                           16320  },
+	{ FORMAT_MEDIUM,                   3180   },
+	{ LOAD_UNLOAD,                     780    },
+	{ LOCATE10,                        2940   },
+	{ LOCATE16,                        2940   },
+	{ READ,                            2340   },
+	{ READ_BUFFER,                     480    },
+	{ REWIND,                          600    },
+	{ SEND_DIAGNOSTIC,                 1980   },
+	{ SET_CAPACITY,                    780    },
+	{ SPACE6,                          2940   },
+	{ SPACE16,                         2940   },
+	{ VERIFY,                          104880 },
+	{ WRITE,                           1500   },
+	{ WRITE_BUFFER,                    540    },
+	{ WRITE_FILEMARKS6,                1620   },
+	{-1, -1}
+};
+
 static struct _timeout_tape timeout_lto5_hh[] = {
 	{ ERASE,                           18000 },
 	{ FORMAT_MEDIUM,                   1560  },
@@ -326,6 +347,26 @@ static struct _timeout_tape timeout_lto9_hh[] = {
 	{-1, -1}
 };
 
+static struct _timeout_tape timeout_lto10_hh[] =  {
+	{ ERASE,                           166370 },
+	{ FORMAT_MEDIUM,                   3240   },
+	{ LOAD_UNLOAD,                     960    },
+	{ LOCATE10,                        3940   },
+	{ LOCATE16,                        3940   },
+	{ READ,                            2340   },
+	{ READ_BUFFER,                     480    },
+	{ REWIND,                          600    },
+	{ SEND_DIAGNOSTIC,                 2040   },
+	{ SET_CAPACITY,                    960    },
+	{ SPACE6,                          3940   },
+	{ SPACE16,                         3940   },
+	{ VERIFY,                          63300  },
+	{ WRITE,                           1560   },
+	{ WRITE_BUFFER,                    540    },
+	{ WRITE_FILEMARKS6,                1680   },
+	{-1, -1}
+};
+
 static int _create_table_tape(struct timeout_tape **result,
 							  struct _timeout_tape* base,
 							  struct _timeout_tape* override)
@@ -401,6 +442,12 @@ int hp_tape_init_timeout(struct timeout_tape** table, int type)
 			break;
 		case DRIVE_LTO9_HH:
 			ret = _create_table_tape(table, timeout_lto, timeout_lto9_hh);
+			break;
+		case DRIVE_LTO10:
+			ret = _create_table_tape(table, timeout_lto, timeout_lto10);
+			break;
+		case DRIVE_LTO10_HH:
+			ret = _create_table_tape(table, timeout_lto, timeout_lto10_hh);
 			break;
 		default:
 			ret = _create_table_tape(table, timeout_lto, timeout_lto7_hh);

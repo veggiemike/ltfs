@@ -243,7 +243,7 @@ int itdtimage_open(const char *name, void **handle)
 		_itdtimage_free(state);
 		return -EDEV_DEVICE_UNOPENABLE;
 	}
-	state->filename = strdup(name);
+	state->filename = arch_strdup(name);
 	if ( !state->filename ) {
 		ltfsmsg(LTFS_ERR, 10001E, "itdtimage_open: filename");
 		_itdtimage_free(state);
@@ -1336,11 +1336,11 @@ int itdtimage_get_device_list(struct tc_drive_info *buf, int count)
 	FILE *infile;
 	DIR *dp;
 	struct dirent *entry;
-	int deventries = 0;
+	int deventries = 0, ret;
 
 	/* Create a file to indicate current directory of drive link (for tape file backend) */
-	asprintf(&filename, "%s/ltfs%ld", DRIVE_LIST_DIR, (long)getpid());
-	if (!filename) {
+	ret = asprintf(&filename, "%s/ltfs%ld", DRIVE_LIST_DIR, (long)getpid());
+	if (ret < 0) {
 		ltfsmsg(LTFS_ERR, 10001E, "filechanger_data drive file name");
 		return -LTFS_NO_MEMORY;
 	}
@@ -1348,6 +1348,7 @@ int itdtimage_get_device_list(struct tc_drive_info *buf, int count)
 	infile = fopen(filename, "r");
 	if (!infile) {
 		ltfsmsg(LTFS_INFO, 31027I, filename);
+		free(filename);
 		return 0;
 	} else {
 		devdir = fgets(line, sizeof(line), infile);
@@ -1369,9 +1370,9 @@ int itdtimage_get_device_list(struct tc_drive_info *buf, int count)
 
 		if (buf && deventries < count) {
 			snprintf(buf[deventries].name, TAPE_DEVNAME_LEN_MAX, "%s/%s", devdir, entry->d_name);
-			strncpy(buf[deventries].vendor, "DUMMY", TAPE_VENDOR_NAME_LEN_MAX);
-			strncpy(buf[deventries].model, "DUMMYDEV", TAPE_MODEL_NAME_LEN_MAX);
-			strncpy(buf[deventries].serial_number, &(entry->d_name[strlen(DRIVE_FILE_PREFIX)]), TAPE_SERIAL_LEN_MAX);
+			arch_strncpy_auto(buf[deventries].vendor, "DUMMY", TAPE_VENDOR_NAME_LEN_MAX);
+			arch_strncpy_auto(buf[deventries].model, "DUMMYDEV", TAPE_MODEL_NAME_LEN_MAX);
+			arch_strncpy_auto(buf[deventries].serial_number, &(entry->d_name[strlen(DRIVE_FILE_PREFIX)]), TAPE_SERIAL_LEN_MAX);
 			ltfsmsg(LTFS_DEBUG, 31030D, buf[deventries].name, buf[deventries].vendor,
 					buf[deventries].model, buf[deventries].serial_number);
 		}
@@ -1427,9 +1428,9 @@ int itdtimage_get_serialnumber(void *vstate, char **result)
 	CHECK_ARG_NULL(result, -LTFS_NULL_ARG);
 
 	if (state->serial_number)
-		*result = strdup((const char *) state->serial_number);
+		*result = arch_strdup((const char *) state->serial_number);
 	else
-		*result = strdup("DUMMY");
+		*result = arch_strdup("DUMMY");
 
 	if (! *result)
 		return -EDEV_NO_MEMORY;

@@ -3,7 +3,7 @@
 **  OO_Copyright_BEGIN
 **
 **
-**  Copyright 2010, 2020 IBM Corp. All rights reserved.
+**  Copyright 2010, 2025 IBM Corp. All rights reserved.
 **
 **  Redistribution and use in source and binary forms, with or without
 **   modification, are permitted provided that the following conditions
@@ -48,10 +48,11 @@
 */
 
 #ifdef mingw_PLATFORM
-#include "libltfs/arch/win/win_util.h"
+#include "arch/win/win_util.h"
 #else
 #include <uuid/uuid.h>
 #include <syslog.h>
+#include <sys/param.h>
 #endif /* mingw_PLATFORM */
 
 #include <getopt.h>
@@ -59,7 +60,6 @@
 #include "libltfs/ltfs_fuse_version.h"
 #include <fuse.h>
 
-#include <sys/param.h>
 #include "libltfs/ltfs_internal.h"
 #include "libltfs/ltfs.h"
 #include "ltfs_copyright.h"
@@ -68,8 +68,11 @@
 #include "libltfs/arch/time_internal.h"
 #include "libltfs/kmi.h"
 
+#ifdef mingw_PLATFORM
+static 
+#endif
 volatile char *copyright = LTFS_COPYRIGHT_0"\n"LTFS_COPYRIGHT_1"\n"LTFS_COPYRIGHT_2"\n" \
-	LTFS_COPYRIGHT_3"\n"LTFS_COPYRIGHT_4"\n"LTFS_COPYRIGHT_5"\n";
+LTFS_COPYRIGHT_3"\n"LTFS_COPYRIGHT_4"\n"LTFS_COPYRIGHT_5"\n";
 
 #ifdef __APPLE__
 #include "libltfs/arch/osx/osx_string.h"
@@ -187,6 +190,9 @@ static struct option long_options[] = {
 	{0, 0, 0, 0}
 };
 
+#ifdef mingw_PLATFORM
+static
+#endif
 void show_usage(char *appname, struct config_file *config, bool full)
 {
 	ltfsresult(16400I, appname); /* Usage: %s [options] filesys */
@@ -227,12 +233,14 @@ void show_usage(char *appname, struct config_file *config, bool full)
 
 int main(int argc, char **argv)
 {
-	struct ltfs_volume *vol;
+	struct ltfs_volume *vol = NULL;
 	struct other_check_opts opt;
 	int ret, log_level, syslog_level, i, cmd_args_len;
-	char *lang, *cmd_args;
+	char *lang = NULL, *cmd_args = NULL;
 	const char *config_file = NULL;
-	void *message_handle;
+	void *message_handle = NULL;
+	bool ltfs_initialized = false;
+	bool message_plugin_loaded = false;
 
 	int fuse_argc = argc;
 	char **fuse_argv = calloc(fuse_argc, sizeof(char *));
@@ -240,21 +248,23 @@ int main(int argc, char **argv)
 		return LTFSCK_OPERATIONAL_ERROR;
 	}
 	for (i = 0; i < fuse_argc; ++i) {
-		fuse_argv[i] = strdup(argv[i]);
+		fuse_argv[i] = arch_strdup(argv[i]);
 		if (! fuse_argv[i]) {
-			return LTFSCK_OPERATIONAL_ERROR;
+			ret = LTFSCK_OPERATIONAL_ERROR;
+			goto cleanup;
 		}
 	}
 	struct fuse_args args = FUSE_ARGS_INIT(fuse_argc, fuse_argv);
 
 	/* Check for LANG variable and set it to en_US.UTF-8 if it is unset. */
-	lang = getenv("LANG");
+	arch_getenv(lang,"LANG");
 	if (! lang) {
 		fprintf(stderr, "LTFS9015W Setting the locale to 'en_US.UTF-8'. If this is wrong, please set the LANG environment variable before starting ltfsck.\n");
 		ret = setenv("LANG", "en_US.UTF-8", 1);
 		if (ret) {
 			fprintf(stderr, "LTFS9016E Cannot set the LANG environment variable\n");
-			return LTFSCK_OPERATIONAL_ERROR;
+			ret = LTFSCK_OPERATIONAL_ERROR;
+			goto cleanup;
 		}
 	}
 
@@ -265,22 +275,27 @@ int main(int argc, char **argv)
 	ret = ltfs_init(LTFS_INFO, true, false);
 	if (ret < 0) {
 		ltfsmsg(LTFS_ERR, 10000E, ret);
-		return LTFSCK_OPERATIONAL_ERROR;
+		ret = LTFSCK_OPERATIONAL_ERROR;
+		goto cleanup;
 	}
+	ltfs_initialized = true;
 
 	/*  Setup signal handler to terminate cleanly */
 	ret = ltfs_set_signal_handlers();
 	if (ret < 0) {
 		ltfsmsg(LTFS_ERR, 10013E);
-		return LTFSCK_OPERATIONAL_ERROR;
+		ret = LTFSCK_OPERATIONAL_ERROR;
+		goto cleanup;
 	}
 
 	/* Register messages with libltfs */
 	ret = ltfsprintf_load_plugin("bin_ltfsck", bin_ltfsck_dat, &message_handle);
 	if (ret < 0) {
 		ltfsmsg(LTFS_ERR, 10012E, ret);
-		return LTFSCK_OPERATIONAL_ERROR;
+		ret = LTFSCK_OPERATIONAL_ERROR;
+		goto cleanup;
 	}
+	message_plugin_loaded = true;
 
 	/* Set up default format options and load the config file. */
 	memset(&opt, 0, sizeof(struct other_check_opts));
@@ -289,6 +304,12 @@ int main(int argc, char **argv)
 	opt.erase_history = false;
 	opt.traverse_mode = TRAVERSE_BACKWARD;
 	opt.salvage_points = false;
+	opt.backend_path = NULL;
+	opt.str_gen = NULL;
+	opt.kmi_backend_name = NULL;
+	opt.devname = NULL;
+	opt.prg_name = NULL;
+	opt.config = NULL;
 
 	/* Check for a config file path given on the command line */
 	while (true) {
@@ -297,7 +318,12 @@ int main(int argc, char **argv)
 		if (c == -1)
 			break;
 		if (c == 'i') {
-			config_file = strdup(optarg);
+			config_file = arch_strdup(optarg);
+			if (!config_file) {
+				ltfsmsg(LTFS_ERR, 10001E, "ltfsck: config_file");
+				ret = LTFSCK_OPERATIONAL_ERROR;
+				goto cleanup;
+			}
 			break;
 		}
 	}
@@ -306,7 +332,8 @@ int main(int argc, char **argv)
 	ret = config_file_load(config_file, &opt.config);
 	if (ret < 0) {
 		ltfsmsg(LTFS_ERR, 10008E, ret);
-		return LTFSCK_OPERATIONAL_ERROR;
+		ret = LTFSCK_OPERATIONAL_ERROR;
+		goto cleanup;
 	}
 
 	/* Parse all command line arguments */
@@ -329,13 +356,23 @@ int main(int argc, char **argv)
 			case 'i':
 				break;
 			case 'e':
-				opt.backend_path = strdup(optarg);
+				opt.backend_path = arch_strdup(optarg);
+				if (!opt.backend_path) {
+					ltfsmsg(LTFS_ERR, 10001E, "ltfsck: backend path");
+					ret = LTFSCK_OPERATIONAL_ERROR;
+					goto cleanup;
+				}
 				break;
 			case 'g':
 				if(opt.op_mode == MODE_CHECK)
 					opt.op_mode = MODE_VERIFY;
 				opt.search_mode = SEARCH_BY_GEN;
-				opt.str_gen = strdup(optarg);
+				opt.str_gen = arch_strdup(optarg);
+				if (!opt.str_gen) {
+					ltfsmsg(LTFS_ERR, 10001E, "ltfsck: generation string");
+					ret = LTFSCK_OPERATIONAL_ERROR;
+					goto cleanup;
+				}
 				break;
 			case 'v':
 				if ( strcmp(optarg, "forward") == 0)
@@ -346,7 +383,12 @@ int main(int argc, char **argv)
 					opt.traverse_mode = TRAVERSE_UNKNOWN;
 				break;
 			case '-':
-				opt.kmi_backend_name = strdup(optarg);
+				opt.kmi_backend_name = arch_strdup(optarg);
+				if (!opt.kmi_backend_name) {
+					ltfsmsg(LTFS_ERR, 10001E, "ltfsck: KMI backend name");
+					ret = LTFSCK_OPERATIONAL_ERROR;
+					goto cleanup;
+				}
 				break;
 			case '+':
 				opt.op_mode = MODE_LIST_POINT;
@@ -390,10 +432,12 @@ int main(int argc, char **argv)
 				break;
 			case 'h':
 				show_usage(argv[0], opt.config, false);
-				return 0;
+				ret = 0;
+				goto cleanup;
 			case 'p':
 				show_usage(argv[0], opt.config, true);
-				return 0;
+				ret = 0;
+				goto cleanup;
 			case 'o':
 				/* ignore -o here to parse them by fuse */
 				++num_of_o;
@@ -401,11 +445,13 @@ int main(int argc, char **argv)
 			case 'V':
 				ltfsresult(16108I, "ltfsck", PACKAGE_VERSION);
 				ltfsresult(16108I, "LTFS Format Specification", LTFS_INDEX_VERSION_STR);
-				return 0;
+				ret = 0;
+				goto cleanup;
 			case '?':
 			default:
 				show_usage(argv[0], opt.config, false);
-				return LTFSCK_USAGE_SYNTAX_ERROR;
+				ret = LTFSCK_USAGE_SYNTAX_ERROR;
+				goto cleanup;
 		}
 	}
 
@@ -414,16 +460,28 @@ int main(int argc, char **argv)
 		const char *default_backend = config_file_get_default_plugin("tape", opt.config);
 		if (! default_backend) {
 			ltfsmsg(LTFS_ERR, 10009E);
-			return LTFSCK_OPERATIONAL_ERROR;
+			ret = LTFSCK_OPERATIONAL_ERROR;
+			goto cleanup;
 		}
-		opt.backend_path = strdup(default_backend);
+		opt.backend_path = arch_strdup(default_backend);
+		if (!opt.backend_path) {
+			ltfsmsg(LTFS_ERR, 10001E, "ltfsck: default backend path");
+			ret = LTFSCK_OPERATIONAL_ERROR;
+			goto cleanup;
+		}
 	}
 	if (! opt.kmi_backend_name) {
 		const char *default_backend = config_file_get_default_plugin("kmi", opt.config);
 		if (default_backend)
-			opt.kmi_backend_name = strdup(default_backend);
+			opt.kmi_backend_name = arch_strdup(default_backend);
 		else
-			opt.kmi_backend_name = strdup("none");
+			opt.kmi_backend_name = arch_strdup("none");
+		
+		if (!opt.kmi_backend_name) {
+			ltfsmsg(LTFS_ERR, 10001E, "ltfsck: default KMI backend");
+			ret = LTFSCK_OPERATIONAL_ERROR;
+			goto cleanup;
+		}
 	}
 	if (opt.kmi_backend_name && strcmp(opt.kmi_backend_name, "none") == 0)
 		opt.kmi_backend_name = NULL;
@@ -432,7 +490,8 @@ int main(int argc, char **argv)
 	if (opt.quiet && (opt.trace || opt.fulltrace)) {
 		ltfsmsg(LTFS_ERR, 9013E);
 		show_usage(argv[0], opt.config, false);
-		return LTFSCK_OPERATIONAL_ERROR;
+		ret = LTFSCK_OPERATIONAL_ERROR;
+		goto cleanup;
 	} else if (opt.quiet) {
 		log_level = LTFS_WARN;
 		syslog_level = LTFS_NONE;
@@ -463,19 +522,19 @@ int main(int argc, char **argv)
 	if (!cmd_args) {
 		/* Memory allocation failed */
 		ltfsmsg(LTFS_ERR, 10001E, "ltfsck (arguments)");
-		return LTFSCK_OPERATIONAL_ERROR;
+		ret = LTFSCK_OPERATIONAL_ERROR;
+		goto cleanup;
 	}
-	strcat(cmd_args, argv[0]);
+	arch_strcat(cmd_args, cmd_args_len, argv[0]);
 	for (i = 1; i < argc; i++) {
-		strcat(cmd_args, " ");
-		strcat(cmd_args, argv[i]);
+		arch_strcat(cmd_args, cmd_args_len, " ");
+		arch_strcat(cmd_args, cmd_args_len, argv[i]);
 	}
 	ltfsmsg(LTFS_INFO, 16088I, cmd_args);
-	free(cmd_args);
 
 	/* Show build time information */
 	ltfsmsg(LTFS_INFO, 16089I, BUILD_SYS_FOR);
-	ltfsmsg(LTFS_INFO, 16090I, BUILD_SYS_GCC);
+	ltfsmsg(LTFS_INFO, 16090I, BUILD_SYS_COMPILER, BUILD_SYS_COMPILER_VER);
 
 	/* Show run time information */
 	show_runtime_system_info();
@@ -484,33 +543,64 @@ int main(int argc, char **argv)
 	ret = ltfs_volume_alloc("ltfsck", &vol);
 	if (ret < 0) {
 		ltfsmsg(LTFS_ERR, 16001E);
-		return LTFSCK_OPERATIONAL_ERROR;
+		ret = LTFSCK_OPERATIONAL_ERROR;
+		goto cleanup;
 	}
 
-	if(argv[optind + num_of_o])
-		opt.devname = strdup(argv[optind + num_of_o]);
+	if(argv[optind + num_of_o]) {
+		opt.devname = arch_strdup(argv[optind + num_of_o]);
+		if (!opt.devname) {
+			ltfsmsg(LTFS_ERR, 10001E, "ltfsck: device name");
+			ret = LTFSCK_OPERATIONAL_ERROR;
+			goto cleanup;
+		}
+	}
 
-	opt.prg_name = strdup(argv[0]);
+	opt.prg_name = arch_strdup(argv[0]);
+	if (!opt.prg_name) {
+		ltfsmsg(LTFS_ERR, 10001E, "ltfsck: program name");
+		ret = LTFSCK_OPERATIONAL_ERROR;
+		goto cleanup;
+	}
 
 	if (_ltfsck_validate_options(&opt)) {
 		ltfsmsg(LTFS_ERR, 16002E);
 		show_usage(argv[0], opt.config, false);
-		return LTFSCK_USAGE_SYNTAX_ERROR;
+		ret = LTFSCK_USAGE_SYNTAX_ERROR;
+		goto cleanup;
 	}
 
 	ret = ltfs_fs_init();
-	if (ret)
-		return LTFSCK_OPERATIONAL_ERROR;
+	if (ret) {
+		ret = LTFSCK_OPERATIONAL_ERROR;
+		goto cleanup;
+	}
 
 	ret = ltfsck(vol, &opt, &args);
 
+cleanup:
+	/* Free all allocated resources */
+	if (fuse_argv) {
+		for (i = 0; i < fuse_argc; ++i) {
+			free(fuse_argv[i]);
+		}
+		free(fuse_argv);
+	}
+	free(cmd_args);
 	free(opt.prg_name);
 	free(opt.backend_path);
 	free(opt.kmi_backend_name);
 	free(opt.devname);
-	config_file_free(opt.config);
-	ltfsprintf_unload_plugin(message_handle);
-	ltfs_finish();
+	free(opt.str_gen);
+	if (config_file)
+		free((void *)config_file);
+	if (opt.config)
+		config_file_free(opt.config);
+	if (message_plugin_loaded)
+		ltfsprintf_unload_plugin(message_handle);
+	if (ltfs_initialized)
+		ltfs_finish();
+	
 	return ret;
 }
 
@@ -751,7 +841,7 @@ void _store_index(struct index_info *dst, struct ltfs_index *src)
 	dst->selfptr    = src->selfptr;
 	dst->backptr    = src->backptr;
 	if(src->commit_message)
-		dst->commit_message= strdup(src->commit_message);
+		dst->commit_message= arch_strdup(src->commit_message);
 	dst->next       = NULL;
 }
 #endif

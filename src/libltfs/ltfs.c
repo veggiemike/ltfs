@@ -81,11 +81,9 @@
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #endif
 
-/* O_BINARY is defined only in MinGW */
-#ifndef O_BINARY
-#define O_BINARY 0
+#ifdef mingw_PLATFORM
+static
 #endif
-
 volatile char *copyright = LTFS_COPYRIGHT_0"\n"LTFS_COPYRIGHT_1"\n"LTFS_COPYRIGHT_2"\n" \
 	LTFS_COPYRIGHT_3"\n"LTFS_COPYRIGHT_4"\n"LTFS_COPYRIGHT_5"\n";
 
@@ -206,6 +204,58 @@ bool ltfs_is_interrupted(void)
 {
 	return interrupted;
 }
+
+bool caught_sigcont = false;
+void _ltfs_sigcont(int signal)
+{
+	ltfsmsg(LTFS_INFO, 17294I, signal);
+	ltfs_sigcont_set(true);
+}
+
+void ltfs_sigcont_set(bool sig_val)
+{
+	caught_sigcont = sig_val;
+}
+
+bool ltfs_caught_sigcont(void)
+{
+	return caught_sigcont;
+}
+
+int ltfs_extra_signal_handlers(void)
+#ifdef mingw_PLATFORM
+{
+	return 0;
+}
+#else
+{
+	ltfs_sighandler_t ret;
+	ret = signal(SIGCONT, _ltfs_sigcont);
+	if (ret == SIG_ERR) {
+		return -LTFS_SIG_HANDLER_ERR;
+	}
+
+	return 0;
+}
+#endif
+
+int ltfs_unset_extra_signal_handler(void)
+#ifdef mingw_PLATFORM
+{
+	return 0;
+}
+#else
+{
+	ltfs_sighandler_t rc;
+	int ret = 0;
+
+	rc = signal(SIGCONT, SIG_DFL);
+	if (rc == SIG_ERR)
+		ret = -LTFS_SIG_HANDLER_ERR;
+
+	return ret;
+}
+#endif
 
 /**
  * This function can be used to enable libltfs signal handler
@@ -1260,7 +1310,7 @@ int ltfs_get_index_commit_message(char **msg, struct ltfs_volume *vol)
 	if (err < 0)
 		return err;
 	if (vol->index->commit_message) {
-		ret = strdup(vol->index->commit_message);
+		ret = arch_strdup(vol->index->commit_message);
 		if (! ret) {
 			ltfsmsg(LTFS_ERR, 10001E, __FUNCTION__);
 			releaseread_mrsw(&vol->lock);
@@ -1285,7 +1335,7 @@ int ltfs_get_index_creator(char **msg, struct ltfs_volume *vol)
 	if (err < 0)
 		return err;
 	if (vol->index->creator) {
-		ret = strdup(vol->index->creator);
+		ret = arch_strdup(vol->index->creator);
 		if (! ret) {
 			ltfsmsg(LTFS_ERR, 10001E, __FUNCTION__);
 			releaseread_mrsw(&vol->lock);
@@ -1310,7 +1360,7 @@ int ltfs_get_volume_name(char **msg, struct ltfs_volume *vol)
 	if (err < 0)
 		return err;
 	if (vol->index->volume_name.name) {
-		ret = strdup(vol->index->volume_name.name);
+		ret = arch_strdup(vol->index->volume_name.name);
 		if (! ret) {
 			ltfsmsg(LTFS_ERR, 10001E, __FUNCTION__);
 			releaseread_mrsw(&vol->lock);
@@ -2375,6 +2425,7 @@ size_t ltfs_max_cache_size(struct ltfs_volume *vol)
  * when the cartridge is known to be in a sane state.
  * The caller must hold vol->lock for write if thread safety is required.
  * @param partition partition in which the schema should be written to
+ * @param reason the reason to write down an index
  * @param vol LTFS volume
  * @return 0 on success or a negative value on error
  */
@@ -2384,12 +2435,13 @@ int ltfs_write_index(char partition, char *reason, struct ltfs_volume *vol)
 	struct tape_offset old_selfptr, old_backptr;
 	struct ltfs_timespec modtime_old = { .tv_sec = 0, .tv_nsec = 0 };
 	bool generation_inc = false;
-	struct tc_position physical_selfptr;
+	struct tc_position physical_selfptr, current_position;
 	char *cache_path_save = NULL;
 	bool write_perm = (strcmp(reason, SYNC_WRITE_PERM) == 0);
 	bool update_vollock = false;
 	int volstat = -1, new_volstat = 0;
 	char *bc_print = NULL;
+	unsigned long long diff;
 
 	CHECK_ARG_NULL(vol, -LTFS_NULL_ARG);
 
@@ -2506,6 +2558,24 @@ int ltfs_write_index(char partition, char *reason, struct ltfs_volume *vol)
 		vol->index->backptr = old_backptr;
 		goto out_write_perm;
 	}
+
+	/* Get the tape position from the tape drive by using the SCSI command READPOS*/
+	ret = tape_get_position_from_drive(vol->device, &current_position);
+	if (ret < 0) {
+		/* Return error since the current tape position was unable to be determined, so there could be an undetected position mismatch */
+		ltfsmsg(LTFS_ERR, 11081E, ret);
+		return -1;
+	}
+
+	/* Prior to writing the index, compare the current location of the head position to the head location 
+	that is kept in the cache of ltfs (physical_selfptr). If they are different return error (-1) */
+	diff = ((unsigned long long)physical_selfptr.block - (unsigned long long)current_position.block);
+	if (diff) {
+		/* Position mismatch, diff not equal zero */
+		ltfsmsg(LTFS_INFO, 17293E, (unsigned long long)physical_selfptr.block, (unsigned long long)current_position.block);
+		return -1;
+	}
+
 	old_selfptr = vol->index->selfptr;
 	vol->index->selfptr.partition = partition;
 	vol->index->selfptr.partition = vol->label->part_num2id[physical_selfptr.partition];
@@ -2677,7 +2747,7 @@ int ltfs_save_index_to_disk(const char *work_dir, char * reason, bool need_gen, 
 	}
 
 	/* Change index file's mode */
-	if (chmod(path, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH)) {
+	if (arch_chmod(path, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH)) {
 		ret = -errno;
 		ltfsmsg(LTFS_ERR, 17184E, errno);
 	}
@@ -2781,9 +2851,9 @@ int ltfs_set_barcode(const char *barcode, struct ltfs_volume *vol)
 				return -LTFS_BARCODE_INVALID;
 			++tmp;
 		}
-		strcpy(vol->label->barcode, barcode);
+		arch_strcpy_auto(vol->label->barcode, barcode);
 	} else
-		strcpy(vol->label->barcode, "      ");
+		arch_strcpy_auto(vol->label->barcode, NO_BARCODE);
 	return 0;
 }
 
@@ -2805,7 +2875,7 @@ int ltfs_set_volume_name(const char *volname, struct ltfs_volume *vol)
 		ret = pathname_validate_file(volname);
 		if (ret < 0)
 			return ret;
-		name_dup = strdup(volname);
+		name_dup = arch_strdup(volname);
 		if (! name_dup) {
 			ltfsmsg(LTFS_ERR, 10001E, __FUNCTION__);
 			return -LTFS_NO_MEMORY;
@@ -2997,21 +3067,21 @@ int ltfs_format_tape(struct ltfs_volume *vol, int density_code, bool destructive
 	}
 
 	/* Set up the label: generate UUID and format time */
-	ltfs_gen_uuid(vol->label->vol_uuid);
+	ltfs_gen_uuid((vol->label->vol_uuid),sizeof(vol->label->vol_uuid));
 	get_current_timespec(&vol->label->format_time);
 
 	/* Duplicate creator */
 	if (vol->label->creator)
 		free(vol->label->creator);
 
-	vol->label->creator = strdup(vol->creator);
+	vol->label->creator = arch_strdup(vol->creator);
 	if (!vol->label->creator) {
 		ltfsmsg(LTFS_ERR, 10001E, __FUNCTION__);
 		return -LTFS_NO_MEMORY;
 	}
 
 	/* Set appropriate volume modification time, UUID, and root directory's uid */
-	strcpy(vol->index->vol_uuid, vol->label->vol_uuid);
+	arch_strcpy_auto(vol->index->vol_uuid, vol->label->vol_uuid);
 	vol->index->mod_time = vol->label->format_time;
 	vol->index->root->creation_time = vol->index->mod_time;
 	vol->index->root->change_time = vol->index->mod_time;
@@ -3486,6 +3556,8 @@ out:
  * on the data partition.
  * @param vol LTFS volume
  * @param index_locking Take index lock while writing an index
+ * @param type index type to write
+ * @param vol LTFS volume
  * @return 0 on success or a negative value on error
  */
 int ltfs_sync_index(char *reason, bool index_locking, struct ltfs_volume *vol)
@@ -4274,7 +4346,7 @@ void ltfs_recover_eod_simple(struct ltfs_volume *vol)
  */
 int ltfs_print_device_list(struct tape_ops *ops)
 {
-	struct tc_drive_info *buf;
+	struct tc_drive_info* buf = NULL;
 	int i, count = 0, info_count = 0, c = 0, ret = 0;
 
 	/* Get device count */
@@ -4371,10 +4443,10 @@ static int _ltfs_write_rao_file(char *file_path_org, unsigned char *buf, size_t 
 		ltfsmsg(LTFS_ERR, 10001E, __FILE__);
 		return -LTFS_NO_MEMORY;
 	}
-
-	fd = open(path,
-			  O_WRONLY | O_CREAT | O_TRUNC | O_BINARY,
-			  S_IWUSR | S_IRUSR | S_IRGRP | S_IROTH);
+		
+	arch_open(&fd, path,
+		O_WRONLY | O_CREAT | O_TRUNC | O_BINARY,
+		SHARE_FLAG_DENYRW, PERMISSION_READWRITE);
 	if (fd < 0) {
 		ltfsmsg(LTFS_INFO, 17276I, path, errno);
 		free(path);
@@ -4382,7 +4454,7 @@ static int _ltfs_write_rao_file(char *file_path_org, unsigned char *buf, size_t 
 		return ret;
 	}
 
-	size = write(fd, buf, len);
+	size = arch_write(fd, buf, len);
 	if (size < 0) {
 		ltfsmsg(LTFS_INFO, 17277I, path, errno);
 		ret = -errno;
@@ -4399,7 +4471,7 @@ static int _ltfs_write_rao_file(char *file_path_org, unsigned char *buf, size_t 
 
 out:
 	free(path);
-	close(fd);
+	arch_close(fd);
 	return ret;
 }
 
@@ -4417,8 +4489,7 @@ static int _ltfs_read_rao_file(char *file_path, unsigned char *buf,
 		ltfsmsg(LTFS_ERR, 10001E, __FILE__);
 		return -LTFS_NO_MEMORY;
 	}
-
-	fd = open(path, O_RDONLY | O_BINARY);
+	arch_open(&fd, path,  O_RDONLY | O_BINARY, SHARE_FLAG_DENYWR, PERMISSION_READ);
 	if (fd < 0) {
 		ltfsmsg(LTFS_INFO, 17279I, path, errno);
 		free(path);
@@ -4433,7 +4504,7 @@ static int _ltfs_read_rao_file(char *file_path, unsigned char *buf,
 		goto out;
 	}
 
-	size = read(fd, buf, len);
+	size = arch_read(fd, buf, len);
 	if (size < 0) {
 		ltfsmsg(LTFS_INFO, 17281I, path, errno);
 		ret = -errno;
@@ -4449,7 +4520,7 @@ static int _ltfs_read_rao_file(char *file_path, unsigned char *buf,
 
 out:
 	free(path);
-	close(fd);
+	arch_close(fd);
 	return ret;
 }
 
